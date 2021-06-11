@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/test/img">
+        <file>timg.jpg</file>
+        <file>diff1.png</file>
+        <file>diff2.png</file>
+    </qresource>
+</RCC>
+ 
