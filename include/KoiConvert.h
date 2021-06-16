@@ -32,6 +32,7 @@ private:
     qint64 mDuration = -1;
     bool mStopFlag = false;
     bool mFinishFlag = false;
+    bool mIsLastFrame = false;
     bool mInsertFrame = false;
     qint64 mTimestamp = -1;
 };

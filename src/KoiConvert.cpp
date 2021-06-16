@@ -28,6 +28,7 @@ void KoiConvert::init(QString srcFilename, QString dstFilename,
     mNeedDeleteAnimation = !animation;
     mAnimation->init(dstFilename);
     mTimestamp = -1;
+    mIsLastFrame = false;
     connect(mAnimation, &KoiAnimation::sigAddFrameFinish, this, &KoiConvert::sigFrameConverted);
 }
 
@@ -75,8 +76,7 @@ void KoiConvert::encodeNextFrameNoProgressBar(bool sync)
     if(mFinishFlag || mAnimation->isBusy()){
         return;
     }
-    bool isLastFrame = mMoive->currentFrameNumber() + 1 == mMoive->frameCount();
-    if(isLastFrame){
+    if(mIsLastFrame){
         mFinishFlag = true;
         mAnimation->finish(mMoive->nextTimeStamp());
         if(sync) mAnimation->waitForIdle();
@@ -84,7 +84,11 @@ void KoiConvert::encodeNextFrameNoProgressBar(bool sync)
     }
     this->mTimestamp = mMoive->timeStamp();
     mAnimation->addFrameTimestamp(mMoive->currentImage(), this->mTimestamp);
-    mMoive->jumpToNextFrame();
+    if(mMoive->currentFrameNumber() + 1 == mMoive->frameCount()){
+        mIsLastFrame = true;
+    }else{
+        mMoive->jumpToNextFrame();
+    }
     if(sync) mAnimation->waitForIdle();
 }
 
