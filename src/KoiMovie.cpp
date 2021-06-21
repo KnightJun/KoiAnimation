@@ -1,121 +1,231 @@
 #include <KoiMovie.h>
 #include <QDebug>
 #include <QFileInfo>
+#include <QThread>
+#include <QMutex>
+#include <QWaitCondition>
+#include <QQueue>
+#include <QImage>
+#include <QImageReader>
 Q_IMPORT_PLUGIN(DgaImagePlugin)
-KoiMovie::KoiMovie(QObject *parent): QObject(parent)
+
+QMutex mutex;
+class ReaderThread : public QThread
+{
+public:
+    KoiMovie::FrameInfo getFrame()
+    {
+        KoiMovie::FrameInfo fInfo;
+        mutex.lock();
+        while (mFrameQueue.isEmpty())
+            bufferIsNotEmpty.wait(&mutex);
+        fInfo = mFrameQueue.front();
+
+        // qInfo() << "pop " << fInfo.image << fInfo.frameIndex << fInfo.timeStamp << fInfo.nextTimeStamp;
+        mFrameQueue.pop_front();
+        bufferIsNotFull.wakeAll();
+        mutex.unlock();
+        return fInfo;
+    }
+    void reset()
+    {
+        mutex.lock();
+        mFrameQueue.clear();
+        mResetRequest = true;
+        bufferIsNotFull.wakeAll();
+        mutex.unlock();
+    }
+
+    void setFileName(const QString &fileName)
+    {
+        QFileInfo info(fileName);
+        mFileName = fileName;
+        if (mReader)
+            delete mReader;
+        mReader = new QImageReader();
+        if (info.suffix() == "png")
+        {
+            mReader->setFormat("apng");
+        }
+        mReader->setFileName(fileName);
+        mImageCount = mReader->imageCount();
+        mFormat = mReader->format();
+        qInfo() << "ReaderThread setFileName on thread : " << currentThreadId();
+        qInfo() << "    mImageCount:" << mImageCount;
+        this->start();
+    }
+    QByteArray format() { return mFormat; };
+    void stop()
+    {
+        qInfo() << "ReaderThread set stop flag";
+        isEnd = true;
+        if (mutex.tryLock())
+        {
+            mutex.unlock();
+        }
+        bufferIsNotFull.wakeAll();
+        this->wait();
+    }
+    int imageCount() { return mImageCount; }
+    QString fileName() { return mFileName; }
+    int mBufferSize = 20;
+    QImageReader *mReader = nullptr;
+    bool isEnd = false;
+
+protected:
+    void run()
+    {
+        bool resetRequest = false;
+        qInfo() << "ReaderThread run on thread : " << currentThreadId();
+        while (1)
+        {
+            if (isEnd)
+            {
+                qInfo() << "thread " << currentThreadId() << " exit by end flag";
+                return;
+            }
+            if (resetRequest || !mReader->canRead())
+            {
+                resetReader();
+                resetRequest = false;
+            }
+            KoiMovie::FrameInfo fInfo;
+            fInfo.image = mReader->read();
+            fInfo.frameIndex = mFrameIndex++;
+            fInfo.timeStamp = mTimeStamp;
+            mTimeStamp += mReader->nextImageDelay();
+            fInfo.nextTimeStamp = mTimeStamp;
+            mutex.lock();
+            if (fInfo.frameIndex == 0) mResetRequest = false;
+            if (mResetRequest)
+            {
+                resetRequest = true;
+            }
+            else
+            {
+                if (mFrameQueue.size() == mBufferSize || mFrameQueue.size() == mImageCount)
+                {
+                    bufferIsNotFull.wait(&mutex);
+                }
+                mFrameQueue.push_back(fInfo);
+                bufferIsNotEmpty.wakeAll();
+            }
+            mutex.unlock();
+        }
+    }
+
+private:
+    QQueue<KoiMovie::FrameInfo> mFrameQueue;
+    QWaitCondition bufferIsNotFull;
+    QWaitCondition bufferIsNotEmpty;
+    int mTimeStamp = 0;
+    int mFrameIndex = 0;
+    int mImageCount;
+    QString mFileName;
+    QByteArray mFormat;
+    bool mResetRequest = false;
+    void resetReader()
+    {
+        QString fileName = mReader->fileName();
+        QByteArray format = mReader->format();
+        QIODevice *device = mReader->device();
+        delete mReader;
+        if (fileName.isEmpty())
+            mReader = new QImageReader(device, format);
+        else
+            mReader = new QImageReader(fileName, format);
+        (void)mReader->canRead(); // Provoke a device->open() call
+        mReader->device()->seek(0);
+        mReader->jumpToImage(0);
+        mTimeStamp = 0;
+        mFrameIndex = 0;
+    }
+};
+
+KoiMovie::KoiMovie(QObject *parent) : QObject(parent)
 {
     mTimer.callOnTimeout(this, &KoiMovie::onTimeout);
-    mReader = new QImageReader();
+    mReaderThread = new ReaderThread();
 };
 
 KoiMovie::~KoiMovie()
 {
-    delete mReader;
+    mReaderThread->stop();
+    delete mReaderThread;
 }
 
 void KoiMovie::setFileName(const QString &fileName)
 {
-    QFileInfo info(fileName);
-    if(info.suffix() == "png"){
-        mReader->setFormat("apng");
-    }
-    mReader->setFileName(fileName);
+    mReaderThread->setFileName(fileName);
 }
 QString KoiMovie::fileName() const
 {
-    return mReader->fileName();
+    return mReaderThread->fileName();
 }
 
 int KoiMovie::frameCount() const
 {
-    return mReader->imageCount();
+    return mReaderThread->imageCount();
 }
 
 int KoiMovie::nextFrameDelay() const
 {
-    return mReader->nextImageDelay();
+    return mFrameInfo.nextTimeStamp - mFrameInfo.timeStamp;
 }
 int KoiMovie::currentFrameNumber() const
 {
-    return mFrameIndex;
+    return mFrameInfo.frameIndex;
 }
 
 QImage KoiMovie::currentImage() const
 {
-    return mCurrentImage;
+    return mFrameInfo.image;
 }
 
 bool KoiMovie::jumpToNextFrame()
 {
-    if(mReader->canRead()){
-        mCurrentImage = mReader->read();
-        mFrameIndex++;
-        onFrameChanged(mFrameIndex);
-    }else{
-        this->reset();
-    }
+    mFrameInfo = mReaderThread->getFrame();
+    onFrameChanged();
     return true;
 }
-void KoiMovie::setFormat(const QByteArray &format)
-{
-    mReader->setFormat(format);
-}
+
 QByteArray KoiMovie::format() const
 {
-    return mReader->format();
+    return mReaderThread->format();
 }
 
-void KoiMovie::reset()
+void KoiMovie::onFrameChanged()
 {
-    QString fileName = mReader->fileName();
-    QByteArray format = mReader->format();
-    QIODevice *device = mReader->device();
-    QColor bgColor = mReader->backgroundColor();
-    QSize scaledSize = mReader->scaledSize();
-    delete mReader;
-    if (fileName.isEmpty())
-        mReader = new QImageReader(device, format);
-    else
-        mReader = new QImageReader(fileName, format);
-    (void)mReader->canRead(); // Provoke a device->open() call
-    mReader->device()->seek(0);
-
-    mReader->jumpToImage(0);
-    mCurrentImage = mReader->read();
-    mFrameIndex = 0;
-    onFrameChanged(mFrameIndex);
-}
-void KoiMovie::onFrameChanged(int frameNumber)
-{
-    if(frameNumber == 0){
-        mNextTimeStamp = 0;
-        mTimeStamp = 0;
-    }
-    mTimeStamp = mNextTimeStamp;
-    mNextTimeStamp += this->nextFrameDelay();
-    if(mSendSig){
-        emit KoiMovie::frameChanged(frameNumber);
+    if (mSendSig)
+    {
+        emit KoiMovie::frameChanged(mFrameInfo.frameIndex);
     }
 }
 bool KoiMovie::jumpToTimeStamp(qint64 timeStamp)
 {
     mSendSig = false;
-    if(timeStamp < 0) timeStamp = 0;
-    if(timeStamp < mTimeStamp){
-        this->reset();
+    if (timeStamp < 0)
+        timeStamp = 0;
+    if(timeStamp < mFrameInfo.timeStamp){
+        mReaderThread->reset();
+        this->jumpToNextFrame();
     }
-    while (!(timeStamp >= mTimeStamp && timeStamp < mNextTimeStamp)
-        && this->frameCount() != currentFrameNumber() +1)
+    while (!(timeStamp >= mFrameInfo.timeStamp && timeStamp < mFrameInfo.nextTimeStamp) && this->frameCount() != this->currentFrameNumber() + 1)
     {
+        qInfo() << this->currentFrameNumber() << ":" << mFrameInfo.timeStamp << " - " << timeStamp << " - " << mFrameInfo.nextTimeStamp;
         this->jumpToNextFrame();
     }
     mSendSig = true;
-    
-    int remainTime = mNextTimeStamp - timeStamp;
-    if(remainTime < 1) remainTime = 1;
-    if(mState == Running){
+
+    int remainTime = this->nextTimeStamp() - timeStamp;
+    if (remainTime < 1)
+        remainTime = 1;
+    if (mState == Running)
+    {
         mTimer.setInterval(remainTime);
-    }else if(mState == Paused){
+    }
+    else if (mState == Paused)
+    {
         mPauseRemainTime = remainTime;
     }
     emit KoiMovie::frameChanged(this->currentFrameNumber());
@@ -123,16 +233,19 @@ bool KoiMovie::jumpToTimeStamp(qint64 timeStamp)
 }
 bool KoiMovie::jumpToFrame(int frameNumber)
 {
-    if(frameNumber == this->currentFrameNumber()){
+    if (frameNumber == this->currentFrameNumber())
+    {
         return true;
     }
-    if(frameNumber >= this->frameCount()){
+    if (frameNumber >= this->frameCount())
+    {
         return false;
     }
-    mSendSig = false;
-    if(frameNumber < this->currentFrameNumber()){
-        this->reset();
+    if (frameNumber < this->currentFrameNumber())
+    {
+        mReaderThread->reset();
     }
+    mSendSig = false;
     while (frameNumber != this->currentFrameNumber())
     {
         this->jumpToNextFrame();
@@ -147,7 +260,6 @@ void KoiMovie::start()
     this->jumpToFrame(0);
     mTimer.start(this->nextFrameDelay());
     mPauseRemainTime = 0;
-    mTimeStamp = 0;
     mState = Running;
 }
 
@@ -160,12 +272,13 @@ void KoiMovie::stop()
 void KoiMovie::onTimeout()
 {
     this->jumpToNextFrame();
+    // qInfo() << "setInterval " << this->nextFrameDelay();
     mTimer.setInterval(this->nextFrameDelay());
 }
 
 qint64 KoiMovie::nextTimeStamp()
 {
-    return mNextTimeStamp;
+    return mFrameInfo.nextTimeStamp;
 }
 
 qint64 KoiMovie::timeStamp()
@@ -173,11 +286,11 @@ qint64 KoiMovie::timeStamp()
     switch (mState)
     {
     case NotRunning:
-        return mNextTimeStamp - this->nextFrameDelay();
+        return mFrameInfo.timeStamp;
     case Running:
-        return mNextTimeStamp - mTimer.remainingTime();
+        return nextTimeStamp() - mTimer.remainingTime();
     case Paused:
-        return mNextTimeStamp - mPauseRemainTime;
+        return nextTimeStamp() - mPauseRemainTime;
     default:
         break;
     }
@@ -191,34 +304,38 @@ KoiMovie::MovieState KoiMovie::state()
 
 qint64 KoiMovie::duration()
 {
-    if(mDuration > -1)return mDuration;
+    qInfo() << "get duration";
+    if (mDuration > -1)
+        return mDuration;
     mSendSig = false;
-    this->reset();
-    int cNum = 0;
+    int cNum = this->currentFrameNumber();
     mDuration = 0;
     do
     {
-        mDuration += mReader->nextImageDelay();
+        mDuration += this->nextFrameDelay();
         this->jumpToNextFrame();
-    }while (this->currentFrameNumber() != cNum);
-    this->reset();
+    } while (this->currentFrameNumber() != cNum);
     mSendSig = true;
     return mDuration;
 }
 
 void KoiMovie::setPaused(bool pause)
 {
-    if(mState == NotRunning)return;
-    if(pause && mState == Paused)return;
-    if(!pause && mState == Running)return;
-    if(pause){
+    if (mState == NotRunning)
+        return;
+    if (pause && mState == Paused)
+        return;
+    if (!pause && mState == Running)
+        return;
+    if (pause)
+    {
         mPauseRemainTime = mTimer.remainingTime();
         mTimer.stop();
         mState = Paused;
-    }else
+    }
+    else
     {
         mTimer.start(mPauseRemainTime);
         mState = Running;
     }
-    
 }

@@ -2,10 +2,18 @@
 #include <QImageReader>
 #include "koianimation_global.h"
 #include <QTimer>
+class ReaderThread;
 class KOIANIMATION_EXPORT KoiMovie : public QObject
 {
     Q_OBJECT
 public:
+    struct FrameInfo
+    {
+        QImage image;
+        int timeStamp;
+        int nextTimeStamp;
+        int frameIndex = -1;
+    };
     enum MovieState {
         NotRunning,
         Paused,
@@ -17,7 +25,6 @@ public:
 
     void setFileName(const QString &fileName);
     QString fileName() const;
-    void setFormat(const QByteArray &format);
     QByteArray format() const;
     int frameCount() const;
     int nextFrameDelay() const;
@@ -38,17 +45,13 @@ Q_SIGNALS:
 
 private:
     /* data */
-    void onFrameChanged(int frameNumber);
-    void reset();
+    void onFrameChanged();
     void onTimeout();
-    qint64 mNextTimeStamp = 0;
-    qint64 mTimeStamp = 0;
     bool mSendSig = true;
     QTimer mTimer;
-    QImage mCurrentImage;
     MovieState mState = NotRunning;
     int mPauseRemainTime = 0;
     qint64 mDuration = -1;
-    QImageReader *mReader;
-    int mFrameIndex = -1;
+    FrameInfo mFrameInfo;
+    ReaderThread* mReaderThread = nullptr;
 };

@@ -85,7 +85,6 @@ int DgaIOHandler::nextImageDelay() const
 
 int	DgaIOHandler::currentImageNumber() const
 {
-    qDebug() << "currentImageNumber : " << mImgIndex;
     return mImgIndex;
 }
 

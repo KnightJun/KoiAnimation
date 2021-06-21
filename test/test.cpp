@@ -10,6 +10,7 @@
 #include <ImageDiff.h>
 #include <KoiConvert.h>
 #include <QDateTime>
+#include <QThread>
 struct FrameInfo{
     QImage image;
     int delay;
@@ -57,9 +58,6 @@ void testKoiPerform(KoiFormat format, QString source, QString dest)
 /*
  * 正常测试
  * */
-// TEST(NormalEncode, GifEncode) {
-//     testKoiPerform(KoiFormat::GIF, "../test.webp", "result.gif");
-// }
 
 // TEST(NormalEncode, DgaEncode) {
 //     testKoiPerform(KoiFormat::Dga, "test.gif", "result.Dga");
@@ -69,113 +67,55 @@ void testKoiPerform(KoiFormat format, QString source, QString dest)
 //     testKoiPerform(KoiFormat::APNG, "result.Dga", "result_decode.png");
 // }
 
-TEST(Gif, timestamp) {
-    KoiMovie mov;
-    mov.setFileName("test.dga");
-    int src_dur = mov.duration();
+TEST(Gif, encode) {
     KoiAnimation koi;
-    koi.init("test2.gif", KoiFormat::GIF);
-    int timestamp = 0;
-    for (size_t i = 0; i < mov.frameCount(); i++)
+    size_t i;
+    koi.init("test.gif", KoiFormat::GIF);
+    QImage img = QImage(640, 480, QImage::Format_ARGB32);
+    for (i = 0; i < 250; i+=10)
     {
-        koi.addFrameTimestamp(mov.currentImage(), timestamp);
-        timestamp += mov.nextFrameDelay();
-        mov.jumpToNextFrame();
-        koi.waitForIdle();
+        for (size_t x = 0; x < img.width(); x++)
+        {
+            for (size_t y = 0; y < img.height(); y++)
+            {
+                img.setPixelColor(x, y, QColor(qRgb(i,i,i)));
+            }
+        }
+        koi.addFrameTimestamp(img, i * 10);
     }
-    koi.finish(timestamp);
-    koi.waitForIdle();
-    
-    int enc_dur = koi.timeStamp();
-    KoiMovie mov2;
-    mov2.setFileName("test2.gif");
-    int dec_dur = mov2.duration();
-    // EXPECT_EQ(src_dur, enc_dur);
-    EXPECT_EQ(enc_dur, dec_dur);
+    koi.finish(i*10);
 }
 
-TEST(Dga, timestamp) {
-    KoiMovie mov;
-    mov.setFileName("test.gif");
-    int src_dur = mov.duration();
-    KoiAnimation koi;
-    koi.init("test2.gif", KoiFormat::GIF);
-    int timestamp = 0;
-    for (size_t i = 0; i < mov.frameCount(); i++)
+TEST(Gif, decode) {
+    KoiMovie kom;
+    kom.setFileName("test.gif");
+    EXPECT_EQ(kom.frameCount(), 25);
+    kom.jumpToFrame(0);
+    for (size_t j = 0; j < 2; j++)
     {
-        koi.addFrameTimestamp(mov.currentImage(), timestamp);
-        timestamp += mov.nextFrameDelay();
-        mov.jumpToNextFrame();
-        koi.waitForIdle();
+        for (size_t i = 0; i < 250; i+=10)
+        {
+            QImage img = kom.currentImage();
+            EXPECT_EQ(img.width(), 640);
+            EXPECT_EQ(img.height(), 480);
+            EXPECT_EQ(kom.timeStamp() , i*10); 
+            kom.jumpToNextFrame();
+        }
     }
-    koi.finish(timestamp);
-    koi.waitForIdle();
-    
-    int enc_dur = koi.timeStamp();
-    KoiMovie mov2;
-    mov2.setFileName("test2.gif");
-    int dec_dur = mov2.duration();
-    EXPECT_EQ(src_dur, enc_dur);
-    EXPECT_EQ(src_dur, dec_dur);
+    kom.jumpToTimeStamp(50 * 10);
+    EXPECT_EQ(kom.timeStamp() , 50 * 10); 
+    kom.jumpToTimeStamp(10 * 10);
+    EXPECT_EQ(kom.timeStamp() , 10 * 10); 
+
 }
 
-TEST(KoiMovie, LoopTest) {
-    KoiMovie mov;
-    mov.setFileName("result.Dga");
-    EXPECT_GT(mov.frameCount(), 1);
-    for (size_t i = 0; i < mov.frameCount(); i++)
+TEST(Convert, GifToWebp) {
+    KoiConvert koc("test.gif", "test.webp");
+    while (!koc.isFinish())
     {
-        mov.jumpToNextFrame();
-    }
-    mov.jumpToNextFrame();
-    EXPECT_EQ(0, mov.currentFrameNumber());
-}
-
-TEST(KoiConvert, DgaWebpTest) {
-    KoiConvert cov("result.Dga", KoiFormat::WEBP);
-    cov.addProgressBar(true);
-    while (!cov.isFinish())
-    {
-        cov.encodeNextFrame(true);
+        koc.encodeNextFrame(true);
     }
 }
-
-// TEST(NormalEncode, DgaDecode2) {
-//     QFile DgaFile("result.Dga");
-//     DgaFile.open(QFile::ReadOnly);
-    
-//     KoiAnimation koi;
-//     DgaIOHandler DgaIO;
-//     QImage curImage;
-//     DgaIO.setDevice(&DgaFile);
-//     DgaIO.canRead();
-//     qDebug() << "jumpToImage(0)";
-//     DgaIO.jumpToImage(0);
-//     int Timestamp = 0;
-//     qDebug() << "koi.init";
-//     koi.init("Dga_decoder.png", KoiFormat::APNG);
-//     do{
-//     qDebug() << "DgaIO.read(&curImage)";
-//         DgaIO.read(&curImage);
-//     qDebug() << "__DgaIO.read(&curImage)";
-//         koi.addFrameTimestamp(curImage, Timestamp);
-//         koi.waitForIdle();
-//         Timestamp += DgaIO.nextImageDelay();
-//         // DgaIO.jumpToNextImage();
-//     }while(DgaIO.currentImageNumber() != 0);
-//     koi.finish(Timestamp);
-//     koi.waitForIdle();
-// }
-// /*
-//  * 正常测试
-//  * */
-// TEST(NormalEncode, PngEncode) {
-//     testKoiPerform(KoiFormat::APNG, "../test.webp", "result.png");
-// }
-
-// TEST(NormalEncode, WebpEncodeTimestamp) {
-//     testKoiPerform(KoiFormat::WEBP, "../test.webp", "result.webp");
-// }
 
 int main(int argc, char *argv[])
 {   
