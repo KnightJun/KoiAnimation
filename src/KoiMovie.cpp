@@ -17,8 +17,10 @@ public:
     {
         KoiMovie::FrameInfo fInfo;
         mutex.lock();
-        while (mFrameQueue.isEmpty())
+        while (mFrameQueue.isEmpty()){
+            mStatWaitNotEmpty++;
             bufferIsNotEmpty.wait(&mutex);
+        }
         fInfo = mFrameQueue.front();
 
         // qInfo() << "pop " << fInfo.image << fInfo.frameIndex << fInfo.timeStamp << fInfo.nextTimeStamp;
@@ -55,16 +57,16 @@ public:
         this->start();
     }
     QByteArray format() { return mFormat; };
-    void stop()
+    ~ReaderThread()
     {
-        qInfo() << "ReaderThread set stop flag";
+        qInfo() << "ReaderThread destoryed.";
+        mutex.lock();
         isEnd = true;
-        if (mutex.tryLock())
-        {
-            mutex.unlock();
-        }
+        mFrameQueue.clear();
         bufferIsNotFull.wakeAll();
+        mutex.unlock();
         this->wait();
+        qInfo() << "mStatWaitNotEmpty : " << mStatWaitNotEmpty;
     }
     int imageCount() { return mImageCount; }
     QString fileName() { return mFileName; }
@@ -124,6 +126,7 @@ private:
     QString mFileName;
     QByteArray mFormat;
     bool mResetRequest = false;
+    int mStatWaitNotEmpty=0;
     void resetReader()
     {
         QString fileName = mReader->fileName();
@@ -150,7 +153,6 @@ KoiMovie::KoiMovie(QObject *parent) : QObject(parent)
 
 KoiMovie::~KoiMovie()
 {
-    mReaderThread->stop();
     delete mReaderThread;
 }
 
@@ -212,7 +214,6 @@ bool KoiMovie::jumpToTimeStamp(qint64 timeStamp)
     }
     while (!(timeStamp >= mFrameInfo.timeStamp && timeStamp < mFrameInfo.nextTimeStamp) && this->frameCount() != this->currentFrameNumber() + 1)
     {
-        qInfo() << this->currentFrameNumber() << ":" << mFrameInfo.timeStamp << " - " << timeStamp << " - " << mFrameInfo.nextTimeStamp;
         this->jumpToNextFrame();
     }
     mSendSig = true;
